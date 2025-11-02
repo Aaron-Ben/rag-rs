@@ -2,3 +2,5 @@
 /Cargo.lock
 /rag/target
 /rag/Cargo.lock
+
+.env
