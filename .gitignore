@@ -1,0 +1,4 @@
+/target
+/Cargo.lock
+/rag/target
+/rag/Cargo.lock
