@@ -18,6 +18,7 @@ pub struct TongyiClient {
 impl TongyiClient {
     
     pub fn new() -> Self {
+        dotenv().ok();
         let api_key = std::env::var("DASHSCOPE_API_KEY")
             .expect("请设置环境变量 DASHSCOPE_API_KEY");
         Self {
