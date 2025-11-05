@@ -2,6 +2,9 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use std::collections::HashMap;
 
+#[cfg(feature = "token-aware")]
+use tiktoken_rs::CoreBPE;
+
 
 #[derive(Debug, Clone)]
 pub struct TextChunk {
@@ -23,11 +26,10 @@ pub struct RecursiveChunker {
 impl RecursiveChunker {
     /// 创建分块器
     pub fn new(max_tokens: usize, model: &str) -> Self {
-        let bpe = if cfg!(feature = "token-aware") {
+        #[cfg(feature = "token-aware")]
+        let bpe = {
             let key = Self::normalize_model(model);
             Some(tiktoken_rs::get_bpe_from_model(&key).expect("Unsupported model"))
-        } else {
-            None
         };
 
         Self {
@@ -248,6 +250,7 @@ impl RecursiveChunker {
         ((chars as f64 / 3.0) + words as f64) as usize
     }
 
+    #[cfg(feature = "token-aware")]
     fn normalize_model(model: &str) -> String {
         match model.trim().to_lowercase().as_str() {
             "gpt-4o" | "gpt-4" | "text-embedding-3-small" | "text-embedding-3-large" => "cl100k_base".to_string(),
@@ -266,8 +269,7 @@ mod tests {
     use std::path::Path;
     #[test]
     pub fn test_count_tokens() -> Result<()> {
-        let cwd = std::env::current_dir()?;
-        println!("Current dir: {:?}", cwd);
+
         let path = Path::new("/Users/xuenai/Code/rag-rs/docs/google.txt");
         let text = fs::read_to_string(path).expect("无法读取");
 

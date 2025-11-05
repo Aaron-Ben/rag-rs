@@ -16,7 +16,6 @@ pub struct TongyiClient {
 
 
 impl TongyiClient {
-    
     pub fn new() -> Self {
         dotenv().ok();
         let api_key = std::env::var("DASHSCOPE_API_KEY")
@@ -44,6 +43,12 @@ impl TongyiClient {
     pub fn with_max_tokens(mut self, max_tokens: u32) -> Self {
         self.max_tokens = Some(max_tokens);
         self
+    }
+}
+
+impl Default for TongyiClient {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -80,12 +85,11 @@ impl LlmClient for TongyiClient {
         let response_json: serde_json::Value = serde_json::from_str(&response_text)?;
 
         // 提取返回的消息内容
-        if let Some(choices) = response_json["choices"].as_array() {
-            if let Some(first_choice) = choices.first() {
-                if let Some(content) = first_choice["message"]["content"].as_str() {
-                    return Ok(content.to_string());
-                }
-            }
+        if let Some(choices) = response_json["choices"].as_array()
+            && let Some(first_choice) = choices.first()
+            && let Some(content) = first_choice["message"]["content"].as_str()
+        {
+            return Ok(content.to_string());
         }
 
         Err(anyhow!("无法从响应中提取消息内容: {}", response_text))
