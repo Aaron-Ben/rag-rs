@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use crate::tiktoken::count_tokens;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FAQEntry {
@@ -23,17 +24,27 @@ pub struct FAQChunk {
 pub struct FAQChunker {
     max_tokens: usize,
     overlap: usize,
+    model: String,
 }
 
 impl FAQChunker {
-    pub fn new(max_tokens: usize, overlap: usize) -> Self {
-        Self { max_tokens, overlap }
+    /// 创建新的 FAQChunker
+    /// 
+    /// # 参数
+    /// - `max_tokens`: 每个 chunk 的最大 token 数
+    /// - `overlap`: 重叠的句子数（用于超长 QA 拆分）
+    /// - `model`: 模型名称，用于 tokenizer（如 "qwen-max", "gpt-4o"）
+    pub fn new(max_tokens: usize, overlap: usize, model: String) -> Self {
+        Self { 
+            max_tokens, 
+            overlap,
+            model,
+        }
     }
 
-    /// 简单估算 token 数
-    fn estimate_tokens(text: &str) -> usize {
-        let effective_chars = text.chars().filter(|c| !c.is_whitespace()).count();
-        (effective_chars as f64 / 1.5).ceil() as usize
+    /// 使用模型原生的 tokenizer 计算 token 数
+    fn count_tokens(&self, text: &str) -> usize {
+        count_tokens(text, &self.model)
     }
 
     /// 按 QA 对分块（每个 QA 是一个 chunk，超长时拆分）
@@ -47,7 +58,7 @@ impl FAQChunker {
             
             // 构建 QA 完整内容
             let raw_content = format!("Q: {}\nA: {}", entry.q.trim(), entry.a.trim());
-            let raw_token_count = Self::estimate_tokens(&raw_content);
+            let raw_token_count = self.count_tokens(&raw_content);
 
             // 处理超长 QA（拆分后生成多个 chunk）
             if raw_token_count > self.max_tokens {
@@ -84,7 +95,7 @@ impl FAQChunker {
 
         for (sent_idx, sentence) in sentences.iter().enumerate() {
             let sentence_with_punc = format!("{}{}", sentence.trim(), "。"); // 补回标点
-            let sentence_tokens = Self::estimate_tokens(&sentence_with_punc);
+            let sentence_tokens = self.count_tokens(&sentence_with_punc);
 
             // 预判：添加当前句子后是否超 max_tokens
             let new_token_count = current_token_count + sentence_tokens;
@@ -114,7 +125,7 @@ impl FAQChunker {
                         current_sentences.push(format!("{}{}", s.trim(), "。"));
                     }
                     // 重新计算重叠后的 token 数
-                    current_token_count = Self::estimate_tokens(
+                    current_token_count = self.count_tokens(
                         &current_sentences.join("")
                     );
                 } else {
@@ -239,7 +250,7 @@ mod tests {
         let entries = FAQEntry::parse_from_markdown(&markdown);
         println!("Parsed {} FAQ entries", entries.len());
 
-        let chunker = FAQChunker::new(200, 30); // max_tokens=200, overlap=30
+        let chunker = FAQChunker::new(200, 30, "qwen-max".to_string()); // max_tokens=200, overlap=30, model="qwen-max"
         let chunks = chunker.chunk_by_qa(entries);
 
         println!("\nGenerated {} chunks:\n", chunks.len());

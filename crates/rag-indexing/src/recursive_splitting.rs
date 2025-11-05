@@ -1,8 +1,7 @@
 use once_cell::sync::Lazy;
 use regex::Regex;
 use std::collections::HashMap;
-
-#[cfg(feature = "token-aware")]
+use std::fmt;
 use tiktoken_rs::CoreBPE;
 
 
@@ -15,27 +14,33 @@ pub struct TextChunk {
     pub metadata: HashMap<String, String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RecursiveChunker {
     max_tokens: usize,
     model: String,
-    #[cfg(feature = "token-aware")]
-    bpe: Option<CoreBPE>,
+    bpe: CoreBPE,
+}
+
+impl fmt::Debug for RecursiveChunker {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut debug_struct = f.debug_struct("RecursiveChunker");
+        debug_struct.field("max_tokens", &self.max_tokens);
+        debug_struct.field("model", &self.model);
+        debug_struct.field("bpe", &"CoreBPE");
+        debug_struct.finish()
+    }
 }
 
 impl RecursiveChunker {
     /// 创建分块器
     pub fn new(max_tokens: usize, model: &str) -> Self {
-        #[cfg(feature = "token-aware")]
-        let bpe = {
-            let key = Self::normalize_model(model);
-            Some(tiktoken_rs::get_bpe_from_model(&key).expect("Unsupported model"))
-        };
+        let key = Self::normalize_model(model);
+        let bpe = tiktoken_rs::get_bpe_from_model(&key)
+            .expect(&format!("无法为模型 {} 创建 tokenizer（标准化后: {}）", model, key));
 
         Self {
             max_tokens,
             model: model.to_string(),
-            #[cfg(feature = "token-aware")]
             bpe,
         }
     }
@@ -237,24 +242,21 @@ impl RecursiveChunker {
         }
     }
 
-    /// 计算 token 数
+    /// 计算 token 数（使用模型原生的 tokenizer）
     fn token_count(&self, text: &str) -> usize {
-        #[cfg(feature = "token-aware")]
-        if let Some(bpe) = &self.bpe {
-            return bpe.encode_with_special_tokens(text).len();
-        }
-
-        // 降级：粗略估算（英文 1 token ≈ 4 chars，中文 ≈ 1.8 chars）
-        let chars = text.chars().count();
-        let words = text.split_whitespace().count();
-        ((chars as f64 / 3.0) + words as f64) as usize
+        self.bpe.encode_with_special_tokens(text).len()
     }
 
-    #[cfg(feature = "token-aware")]
+    /// 标准化模型名（支持别名）
     fn normalize_model(model: &str) -> String {
         match model.trim().to_lowercase().as_str() {
-            "gpt-4o" | "gpt-4" | "text-embedding-3-small" | "text-embedding-3-large" => "cl100k_base".to_string(),
-            "gpt-3.5-turbo" => "p50k_base".to_string(),
+            "gpt-4o" | "gpt-4" | "gpt-4-turbo" | "gpt-4o-mini" => "gpt-4o".to_string(),
+            "gpt-3.5" | "gpt-3.5-turbo" | "chatgpt" => "gpt-3.5-turbo".to_string(),
+            "text-embedding-3-small" | "embedding-small" => "text-embedding-3-small".to_string(),
+            "text-embedding-3-large" | "embedding-large" => "text-embedding-3-large".to_string(),
+            "text-embedding-ada-002" | "ada" => "text-embedding-ada-002".to_string(),
+            // Qwen 系列（使用 cl100k_base 编码，与 GPT-4 兼容）
+            "qwen" | "qwen-max" | "qwen-plus" | "qwen-turbo" | "qwen-7b" | "qwen-14b" | "qwen-72b" => "gpt-4o".to_string(),
             _ => model.to_string(),
         }
     }

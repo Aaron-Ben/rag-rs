@@ -1,11 +1,7 @@
-#[cfg(feature = "token-aware")]
 use tiktoken_rs::{get_bpe_from_model, CoreBPE};
-#[cfg(feature = "token-aware")]
 use once_cell::sync::Lazy;
-#[cfg(feature = "token-aware")]
 use std::collections::HashMap;
 
-#[cfg(feature = "token-aware")]
 /// 全局缓存：模型名 → BPE 编码器（线程安全、高性能）
 static BPE_CACHE: Lazy<std::sync::Mutex<HashMap<String, CoreBPE>>> = Lazy::new(|| {
     std::sync::Mutex::new(HashMap::new())
@@ -15,11 +11,10 @@ static BPE_CACHE: Lazy<std::sync::Mutex<HashMap<String, CoreBPE>>> = Lazy::new(|
 /// 
 /// # 参数
 /// - `text`: 输入文本
-/// - `model`: 模型名，如 "gpt-4o", "gpt-3.5-turbo", "text-embedding-3-small"
+/// - `model`: 模型名，如 "gpt-4o", "gpt-3.5-turbo", "text-embedding-3-small", "qwen-max"
 /// 
 /// # 返回
 /// `usize` token 数量
-#[cfg(feature = "token-aware")]
 pub fn count_tokens(text: &str, model: &str) -> usize {
     // 标准化模型名
     let model_key = normalize_model_name(model);
@@ -28,7 +23,10 @@ pub fn count_tokens(text: &str, model: &str) -> usize {
     let bpe = {
         let mut cache = BPE_CACHE.lock().unwrap();
         cache.entry(model_key.clone())
-            .or_insert_with(|| get_bpe_from_model(&model_key).expect("Unsupported model"))
+            .or_insert_with(|| {
+                get_bpe_from_model(&model_key)
+                    .expect(&format!("无法为模型 {} 创建 tokenizer（标准化后: {}）", model, model_key))
+            })
             .clone()
     };
 
@@ -36,14 +34,6 @@ pub fn count_tokens(text: &str, model: &str) -> usize {
     bpe.encode_with_special_tokens(text).len()
 }
 
-/// 当未启用 token-aware feature 时，使用简单的字符数估算
-#[cfg(not(feature = "token-aware"))]
-pub fn count_tokens(text: &str, _model: &str) -> usize {
-    // 简单估算：大约 4 个字符 = 1 个 token
-    text.len() / 4
-}
-
-#[cfg(feature = "token-aware")]
 /// 标准化模型名（支持别名）
 fn normalize_model_name(model: &str) -> String {
     match model.trim().to_lowercase().as_str() {
@@ -55,6 +45,8 @@ fn normalize_model_name(model: &str) -> String {
         "text-embedding-3-small" | "embedding-small" => "text-embedding-3-small".to_string(),
         "text-embedding-3-large" | "embedding-large" => "text-embedding-3-large".to_string(),
         "text-embedding-ada-002" | "ada" => "text-embedding-ada-002".to_string(),
+        // Qwen 系列（使用 cl100k_base 编码，与 GPT-4 兼容）
+        "qwen" | "qwen-max" | "qwen-plus" | "qwen-turbo" | "qwen-7b" | "qwen-14b" | "qwen-72b" => "gpt-4o".to_string(),
         // 默认
         _ => model.to_string(),
     }
@@ -65,7 +57,6 @@ mod tests {
     use super::*;  
     
     #[test]
-    #[cfg(feature = "token-aware")]
     pub fn test_count_tokens() {
         let text = "Rust 是一门系统编程语言，专注于安全与性能。\n它由 Mozilla 开发。";
 
@@ -73,20 +64,13 @@ mod tests {
             "gpt-4o",
             "gpt-3.5-turbo",
             "text-embedding-3-small",
+            "qwen-max",
         ];
 
         for model in models {
             let tokens = count_tokens(text, model);
             println!("[{}] tokens: {}", model, tokens);
+            assert!(tokens > 0);
         }
-    }
-
-    #[test]
-    #[cfg(not(feature = "token-aware"))]
-    pub fn test_count_tokens_estimate() {
-        let text = "Rust 是一门系统编程语言，专注于安全与性能。\n它由 Mozilla 开发。";
-        let tokens = count_tokens(text, "gpt-4o");
-        println!("[估算] tokens: {}", tokens);
-        assert!(tokens > 0);
     }
 }
