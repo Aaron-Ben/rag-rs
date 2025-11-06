@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use crate::tiktoken::count_tokens;
+use jieba_rs::Jieba;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FAQEntry {
@@ -25,6 +26,7 @@ pub struct FAQChunker {
     max_tokens: usize,
     overlap: usize,
     model: String,
+    jieba: Jieba,
 }
 
 impl FAQChunker {
@@ -39,6 +41,7 @@ impl FAQChunker {
             max_tokens, 
             overlap,
             model,
+            jieba: Jieba::new(),
         }
     }
 
@@ -84,24 +87,36 @@ impl FAQChunker {
     /// 优化：超长 QA 拆分（保留上下文重叠，确保拆分后语义完整）
     fn split_long_qa(&self, text: &str, faq_id: &str, entry: &FAQEntry) -> Vec<FAQChunk> {
         let mut chunks = Vec::new();
-        let sentences: Vec<&str> = text
-            .split(&['。', '！', '？', '.', '!', '?', '；', ';'])
-            .filter(|s| !s.trim().is_empty())
-            .collect();
+        
+        // 优先使用语义单元切分（对中文更友好）
+        let semantic_units = self.split_into_semantic_units(text);
+        
+        // 如果没有语义单元或只有一个单元（可能全是英文），则回退到句子切分
+        let units: Vec<String> = if semantic_units.len() > 1 {
+            semantic_units
+        } else {
+            // 回退到句子切分
+            text.split(&['。', '！', '？', '.', '!', '?', '；', ';'])
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| s.trim().to_string())
+                .collect()
+        };
 
         let mut current_chunk_idx = 1;
-        let mut current_sentences = Vec::new();
+        let mut current_units = Vec::new();
         let mut current_token_count = 0;
 
-        for (sent_idx, sentence) in sentences.iter().enumerate() {
-            let sentence_with_punc = format!("{}{}", sentence.trim(), "。"); // 补回标点
-            let sentence_tokens = self.count_tokens(&sentence_with_punc);
+        for (unit_idx, unit) in units.iter().enumerate() {
+            let unit_trimmed = unit.trim();
+            if unit_trimmed.is_empty() { continue; }
+            
+            let unit_tokens = self.count_tokens(unit_trimmed);
 
-            // 预判：添加当前句子后是否超 max_tokens
-            let new_token_count = current_token_count + sentence_tokens;
-            if new_token_count > self.max_tokens && !current_sentences.is_empty() {
+            // 预判：添加当前单元后是否超 max_tokens
+            let new_token_count = current_token_count + unit_tokens;
+            if new_token_count > self.max_tokens && !current_units.is_empty() {
                 // 生成当前 chunk
-                let chunk_content = current_sentences.join("");
+                let chunk_content = current_units.join("");
                 chunks.push(FAQChunk {
                     chunk_id: format!("{}-chunk-{}", faq_id, current_chunk_idx),
                     faq_id: faq_id.to_string(),
@@ -112,36 +127,36 @@ impl FAQChunker {
                     token_count: current_token_count,
                 });
 
-                // 重置当前句子（保留重叠部分，避免语义断裂）
-                current_sentences.clear();
+                // 重置当前单元（保留重叠部分，避免语义断裂）
+                current_units.clear();
                 if self.overlap > 0 {
-                    // 从当前句子往前取 overlap 个句子作为重叠
-                    let start_idx = if sent_idx >= self.overlap {
-                        sent_idx - self.overlap
+                    // 从当前单元往前取 overlap 个单元作为重叠
+                    let start_idx = if unit_idx >= self.overlap {
+                        unit_idx - self.overlap
                     } else {
                         0
                     };
-                    for s in &sentences[start_idx..=sent_idx] {
-                        current_sentences.push(format!("{}{}", s.trim(), "。"));
+                    for u in &units[start_idx..=unit_idx] {
+                        current_units.push(u.trim().to_string());
                     }
                     // 重新计算重叠后的 token 数
                     current_token_count = self.count_tokens(
-                        &current_sentences.join("")
+                        &current_units.join("")
                     );
                 } else {
-                    current_sentences.push(sentence_with_punc.clone());
-                    current_token_count = sentence_tokens;
+                    current_units.push(unit_trimmed.to_string());
+                    current_token_count = unit_tokens;
                 }
                 current_chunk_idx += 1;
             } else {
-                current_sentences.push(sentence_with_punc);
+                current_units.push(unit_trimmed.to_string());
                 current_token_count = new_token_count;
             }
         }
 
         // 添加最后一个 chunk
-        if !current_sentences.is_empty() {
-            let chunk_content = current_sentences.join("");
+        if !current_units.is_empty() {
+            let chunk_content = current_units.join("");
             chunks.push(FAQChunk {
                 chunk_id: format!("{}-chunk-{}", faq_id, current_chunk_idx),
                 faq_id: faq_id.to_string(),
@@ -154,6 +169,47 @@ impl FAQChunker {
         }
 
         chunks
+    }
+
+    /// 使用 jieba 分词将文本切分为语义单元
+    /// 语义单元是在标点符号或自然停顿处切分的文本片段
+    fn split_into_semantic_units(&self, text: &str) -> Vec<String> {
+        // 使用 jieba 进行精确分词
+        let words = self.jieba.cut(text, true);
+        let mut units = Vec::new();
+        let mut current_unit = String::new();
+
+        // 定义语义终止符（标点符号）
+        let sentence_endings = ['.', '。', '!', '！', '?', '？', ';', '；'];
+        let clause_endings = ['，', ',', '、', '：', ':', '\n'];
+
+        for word in words {
+            current_unit.push_str(word);
+            
+            // 检查是否包含句子结束符
+            let has_sentence_end = word.chars().any(|c| sentence_endings.contains(&c));
+            // 检查是否包含分句符（在较长文本中）
+            let has_clause_end = word.chars().any(|c| clause_endings.contains(&c));
+            
+            // 如果遇到句子结束符，切分单元
+            if has_sentence_end {
+                units.push(current_unit.trim().to_string());
+                current_unit.clear();
+            } else if has_clause_end && current_unit.len() > 50 {
+                // 对于较长的文本，在分句符处也切分（但只在单元较长时）
+                // 这样可以避免过度切分短文本
+                units.push(current_unit.trim().to_string());
+                current_unit.clear();
+            }
+        }
+
+        // 添加最后一个单元
+        if !current_unit.trim().is_empty() {
+            units.push(current_unit.trim().to_string());
+        }
+
+        // 过滤空单元
+        units.into_iter().filter(|u| !u.is_empty()).collect()
     }
 }
 

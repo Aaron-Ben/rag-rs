@@ -1,5 +1,5 @@
 [workspace]
-members = [ 
+members = [ "crates/rag-embeddings", 
     "crates/rag-indexing", 
     "crates/rsllm", 
     "rag"
