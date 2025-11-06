@@ -14,8 +14,8 @@ struct QwenRequest {
 #[derive(Deserialize, Debug)]
 struct OpenAIEmbeddingResponse {
     data: Vec<OpenAIEmbeddingItem>,
-    model: String,
-    usage: OpenAIUsage,
+    _model: String,
+    _usage: OpenAIUsage,
 }
 
 #[derive(Deserialize, Debug)]
@@ -26,8 +26,8 @@ struct OpenAIEmbeddingItem {
 
 #[derive(Deserialize, Debug)]
 struct OpenAIUsage {
-    prompt_tokens: usize,
-    total_tokens: usize,
+    _prompt_tokens: usize,
+    _total_tokens: usize,
 }
 
 #[derive(Deserialize, Debug)]
@@ -132,7 +132,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_embed() {
-        // 从 .env 文件加载环境变量
         dotenv().ok();
         let api_key = std::env::var("DASHSCOPE_API_KEY")
             .expect("请设置环境变量 DASHSCOPE_API_KEY 或在 .env 文件中配置");
