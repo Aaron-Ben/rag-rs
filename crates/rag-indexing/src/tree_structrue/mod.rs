@@ -33,6 +33,10 @@ pub struct NodeMetadata {
     pub node_type: NodeType,
     pub chunk_size: Option<usize>,
     pub file_name: Option<String>,
+    
+    pub image_alt: Option<String>,
+    pub image_path: Option<String>,
+    pub image_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,6 +87,9 @@ impl Node {
                 node_type: NodeType::Root,
                 chunk_size: None,
                 file_name,
+                image_alt: None,
+                image_path: None,
+                image_id: None,
             },
         })
     }
@@ -97,11 +104,6 @@ impl Node {
         let mut relationships = HashMap::new();
         relationships.insert(NodeRelationship::Parent, vec![parent_id]);
 
-        // let mut hier = hierarchy.clone();
-        // if let Some(t) = &title {
-        //     hier.push(t.clone());
-        // }
-
         Node::Intermediate(IntermediateNode {
             id,
             title,
@@ -112,6 +114,9 @@ impl Node {
                 node_type: NodeType::Intermediate,
                 chunk_size: None,
                 file_name: None,
+                image_alt: None,
+                image_path: None,
+                image_id: None,
             },
         })
     }
@@ -123,6 +128,10 @@ impl Node {
         chunk_index: usize,
         hierarchy: Vec<String>,
         document_id: String,
+        image_alt: Option<String>,
+        image_path: Option<String>,
+        image_id: Option<String>,
+        file_name: Option<String>,
     ) -> Self {
         let id = Uuid::new_v4();
         let mut relationships = HashMap::new();
@@ -141,7 +150,10 @@ impl Node {
                 hierarchy: hier,
                 node_type: NodeType::Leaf,
                 chunk_size: Some(chunk_size),
-                file_name: None,
+                file_name,
+                image_alt,
+                image_path,
+                image_id,
             },
         })
     }
@@ -170,7 +182,7 @@ impl Node {
     pub fn children_mut(&mut self) -> &mut Vec<NodeId> {
         self.relationships_mut()
             .entry(NodeRelationship::Child)
-            .or_insert(vec![])
+            .or_insert_with(Vec::new)
     }
 
     pub fn prev_id(&self) -> Option<NodeId> {
@@ -281,7 +293,6 @@ impl NodeTree {
 
         // 2. 维护 prev/next
         if let Some(last_child_id) = parent.children().iter().rev().nth(1).copied() {
-            // 上一个兄弟
             if let Some(prev_node) = self.nodes.get_mut(&last_child_id) {
                 prev_node.set_next(Some(child_node.id()));
             }
@@ -298,5 +309,4 @@ impl NodeTree {
         self.nodes.values()
             .filter_map(|n| n.as_leaf())
     }
-
 }

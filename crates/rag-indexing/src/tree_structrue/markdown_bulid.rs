@@ -3,6 +3,7 @@ use pulldown_cmark::{Parser, Options, Event, Tag};
 use anyhow::Result;
 use std::fmt;
 
+
 pub struct MarkdownParser {
     document_id: String,
     file_name: Option<String>,
@@ -33,12 +34,17 @@ impl MarkdownParser {
         let mut in_heading = false;
         let mut in_table = false;
         let mut in_code_block = false;
+        let mut in_image = false;
 
         // 缓冲区
         let mut table_header: Option<Vec<String>> = None;
+        let mut table_buffer: Vec<Vec<String>> = Vec::new();
         let mut current_row: Vec<String> = vec![];
         let mut code_buffer = String::new();
         let mut paragraph_buffer = String::new();
+
+        let mut image_alt = String::new();
+        let mut image_path = String::new();
 
         // 全局 chunk 计数
         let mut chunk_index = 0;
@@ -86,10 +92,6 @@ impl MarkdownParser {
                             in_heading = true;
                         }
 
-                        Tag::Paragraph => {
-                            // 开始新段落
-                        }
-
                         Tag::CodeBlock(_) => {
                             in_code_block = true;
                             code_buffer.clear();
@@ -98,15 +100,14 @@ impl MarkdownParser {
                         Tag::Table(_) => {
                             in_table = true;
                             table_header = None;
+                            table_buffer.clear();
                             current_row.clear();
                         }
 
-                        Tag::TableHead => {
-                            current_row.clear();
-                        }
-
-                        Tag::TableRow => {
-                            current_row.clear();
+                        Tag::Image { dest_url, title, .. } => {
+                            in_image = true;
+                            image_alt = title.to_string();
+                            image_path = dest_url.to_string();
                         }
 
                         _ => {}
@@ -144,6 +145,10 @@ impl MarkdownParser {
                                     chunk_index,
                                     current_hierarchy.clone(),
                                     self.document_id.clone(),
+                                    None,
+                                    None,
+                                    None,
+                                    self.file_name.clone(),
                                 );
                                 tree.add_node(leaf)?;
                                 chunk_index += 1;
@@ -162,6 +167,10 @@ impl MarkdownParser {
                                         chunk_index,
                                         current_hierarchy.clone(),
                                         self.document_id.clone(),
+                                        None,
+                                        None,
+                                        None,
+                                        self.file_name.clone(),
                                     );
                                     tree.add_node(leaf)?;
                                     chunk_index += 1;
@@ -171,42 +180,90 @@ impl MarkdownParser {
                             }
                         }
 
-                        pulldown_cmark::TagEnd::Table => {
-                            in_table = false;
-                        }
-
                         pulldown_cmark::TagEnd::TableHead => {
                             if in_table {
                                 table_header = Some(current_row.clone());
-                                if let Some(header) = &table_header {
-                                    let header_text = format!("| {} |", header.join(" | "));
-                                    let leaf = Node::new_leaf(
-                                        current_parent_id,
-                                        header_text.clone(),
-                                        header_text.len(),
-                                        chunk_index,
-                                        current_hierarchy.clone(),
-                                        self.document_id.clone(),
-                                    );
-                                    tree.add_node(leaf)?;
-                                    chunk_index += 1;
-                                }
+                                current_row.clear();
                             }
                         }
 
                         pulldown_cmark::TagEnd::TableRow => {
-                            if in_table && table_header.is_some() {
-                                let row_text = format!("| {} |", current_row.join(" | "));
+                            if in_table {
+                                // 只在有 header 时才收集正文行
+                                if table_header.is_some() {
+                                    table_buffer.push(current_row.clone());
+                                }
+                                current_row.clear();
+                            }
+                        }
+
+                        pulldown_cmark::TagEnd::Table => {
+                            if in_table {
+                                // 拼装完整的 Markdown 表格
+                                let mut markdown = String::new();
+                                if let Some(header) = &table_header {
+                                    markdown.push_str(&format!("| {} |\n", header.join(" | ")));
+                                    markdown.push_str(&format!("| {} |\n", "--- | ".repeat(header.len()).trim_end()));
+                                }
+                                for row in &table_buffer {
+                                    markdown.push_str(&format!("| {} |\n", row.join(" | ")));
+                                }
+
+                                // 创建一个 Leaf（整表）
+                                if !markdown.trim().is_empty() {
+                                    let mut table_hier = current_hierarchy.clone();
+                                    table_hier.push(format!("table_{}", chunk_index));
+
+                                    let leaf = Node::new_leaf(
+                                        current_parent_id,
+                                        markdown.clone(),
+                                        markdown.len(),
+                                        chunk_index,
+                                        table_hier,
+                                        self.document_id.clone(),
+                                        None,
+                                        None,
+                                        None,
+                                        self.file_name.clone(),
+                                    );
+                                    tree.add_node(leaf)?;
+                                    chunk_index += 1;
+                                }
+
+                                table_header = None;
+                                table_buffer.clear();
+                                in_table = false;
+                            }
+                        }
+
+                        pulldown_cmark::TagEnd::Image => {
+                            if in_image {
+                                let markdown = format!("![{}]({})", image_alt, image_path);
+                                let mut img_hier = current_hierarchy.clone();
+                                img_hier.push(format!("img_{}", chunk_index));
+
+                                let image_id = image_path.split("/").last().unwrap().to_string();
+
                                 let leaf = Node::new_leaf(
                                     current_parent_id,
-                                    row_text.clone(),
-                                    row_text.len(),
+                                    markdown.clone(),
+                                    markdown.len(),
                                     chunk_index,
-                                    current_hierarchy.clone(),
+                                    img_hier,
                                     self.document_id.clone(),
+                                    if image_alt.is_empty() { None } else { Some(image_alt.clone()) },
+                                    Some(image_path.clone()),
+                                    Some(image_id),
+                                    self.file_name.clone(),
                                 );
                                 tree.add_node(leaf)?;
                                 chunk_index += 1;
+
+                                in_image = false;
+                                image_alt.clear();
+                                image_path.clear();
+
+                                paragraph_buffer.clear();
                             }
                         }
 
@@ -233,7 +290,10 @@ impl MarkdownParser {
                         code_buffer.push('\n');
                     } else if in_table {
                         current_row.push(s.to_string());
-                    } else if !s.trim().is_empty() {
+                    } else if in_image {
+                        image_alt.push_str(s);
+                    } 
+                    else if !s.trim().is_empty() {
                         paragraph_buffer.push_str(s);
                         paragraph_buffer.push(' ');
                     }
@@ -265,6 +325,10 @@ impl MarkdownParser {
                 chunk_index,
                 current_hierarchy.clone(),
                 self.document_id.clone(),
+                None,
+                None,
+                None,
+                self.file_name.clone(),
             );
             tree.add_node(leaf)?;
         }
@@ -291,9 +355,9 @@ impl fmt::Display for Node {
                 }
             }
             Node::Leaf(leaf) => {
-                // 截取文本前50个字符显示
-                let display_text = if leaf.text.chars().count() > 50 {
-                    let truncated: String = leaf.text.chars().take(50).collect();
+                // 截取文本前500个字符显示
+                let display_text = if leaf.text.chars().count() > 500 {
+                    let truncated: String = leaf.text.chars().take(500).collect();
                     format!("{}...", truncated)
                 } else {
                     leaf.text.clone()
@@ -340,7 +404,7 @@ impl fmt::Display for NodeTree {
     }
 }
 
-// 递归打印节点的辅助方法
+// 递归打印节点
 impl NodeTree {
     fn print_node_recursive(&self, f: &mut fmt::Formatter, node_id: NodeId, depth: usize) -> fmt::Result {
         if let Some(node) = self.nodes.get(&node_id) {
@@ -363,9 +427,12 @@ impl NodeTree {
                     ("📂", format!("{} (路径: {})", title, path))
                 }
                 Node::Leaf(leaf) => {
+                    let is_image = leaf.metadata.image_path.is_some();
+                    let icon = if is_image { "🖼️" } else { "📄" };
+
                     // 截取文本用于显示
-                    let display_text = if leaf.text.chars().count() > 60 {
-                        let truncated: String = leaf.text.chars().take(60).collect();
+                    let display_text = if leaf.text.chars().count() > 500 {
+                        let truncated: String = leaf.text.chars().take(500).collect();
                         format!("{}...", truncated)
                     } else {
                         leaf.text.clone()
@@ -375,7 +442,16 @@ impl NodeTree {
                         Some(size) => format!("[chunk_{}]", size),
                         None => "[chunk]".to_string(),
                     };
-                    ("📄", format!("{} {}", chunk_info, clean_text))
+
+                    let content = if is_image {
+                        let alt = leaf.metadata.image_alt.as_deref().unwrap_or("");
+                        let path = leaf.metadata.image_path.as_deref().unwrap_or("");
+                        format!("{} [{}] {} ({})", chunk_info, alt, clean_text, path)
+                    } else {
+                        format!("{} {}", chunk_info, clean_text)
+                    };
+
+                    (icon, content)
                 }
             };
             
@@ -396,10 +472,10 @@ impl NodeTree {
 mod tests { 
     use super::*;
     use anyhow::Result;
+    use serde_json;
 
-    #[test]
-    fn test() -> Result<()> {
-        let md = r#"
+    
+    const TEST_MARKDOWN: &str = r#"
 # ChatGPT出现以来中美大模型发展报告
 ## 概述
 自2022年11月30日OpenAI发布ChatGPT以来，全球人工智能领域发生了前所未有的变革。ChatGPT的发布标志着大语言模型时代的正式开启，激发了中美两国在AI领域的激烈竞争。这场始于技术突破的竞争，已经演变为涉及国家战略、产业生态、人才储备、基础设施等多个维度的全面博弈。
@@ -418,8 +494,6 @@ ChatGPT的出现并非偶然，而是人工智能发展到一定阶段的必然�
 根据斯坦福大学人工智能研究所（HAI）发布的《2025年人工智能指数报告》，中美顶级AI大模型的性能差距已从2023年的17.5%大幅缩至0.3%，几乎实现技术平价。这一里程碑式的进展标志着全球AI竞争格局的深刻变化：从美国的绝对领先转向中美双强并立。
 
 这一变化具有多重意义：首先，中国在AI技术领域的快速追赶证明了其技术创新能力的显著提升；其次，技术差距的缩小意味着未来竞争将更加激烈，任何微小的技术突破都可能改变竞争格局；最后，这种变化也促使两国在AI治理、伦理标准、国际合作等方面寻求新的平衡。
-
-本报告基于2025年最新数据，全面分析中美两国大模型发展现状、技术差异、产业布局和未来趋势，力图为政策制定者、企业决策者、研究人员提供客观、深入、系统的分析框架。报告采用定量分析与定性分析相结合的方法，既关注具体的技术指标和市场数据，也重视发展趋势背后的深层逻辑和战略考量。
         
 ## 历史发展时间线
 
@@ -449,30 +523,6 @@ GPT-3的发布标志着大语言模型从概念走向实用的重要转折点。
 
 Meta的LLaMA模型系列则选择了开源路线，虽然最初只对学术机构开放，但其开源策略为后续整个生态的发展奠定了基础。开源路线的选择在后来证明极具前瞻性，为中国等国家的AI发展提供了重要参考。
 
-### ChatGPT引领的AI革命（2022-2025）
-
-| 时间 | 中国大模型事件 | 美国大模型事件 | 技术影响 | 产业意义 |
-|------|----------------|----------------|----------|----------|
-| 2022年11月 | - | ChatGPT发布 | 引发全球AI热潮 | AI产品化元年 |
-| 2023年3月 | - | GPT-4发布 | 多模态能力革命 | AI能力质的飞跃 |
-| 2023年3月16日 | 百度文心一言发布 | - | 中国大模型元年 | 中国AI追赶开始 |
-| 2023年4月 | 阿里通义千问发布 | - | 阿里AI战略布局 | 电商AI融合 |
-| 2023年5月 | 腾讯混元发布 | - | 腾讯AI生态建设 | 社交AI应用 |
-| 2023年6月 | 讯飞星火发布 | - | 科大讯飞AI突破 | 教育AI专业化 |
-| 2023年5月 | 字节豆包发布 | - | 字节AI产品化 | 内容AI应用 |
-| 2023年12月 | 华为盘古发布 | - | 华为AI产业化 | 产业AI深化 |
-| 2024年9月 | - | OpenAI o1系列 | 推理能力突破 | AI推理新时代 |
-| 2025年 | 通义千问2.5发布 | GPT-5发布 | 中美技术差距缩小 | 技术平价时代 |
-| 2025年 | 讯飞星火V4.0 | Gemini 3发布 | 多模态竞争加剧 | 全模态融合 |
-
-**2022年11月：ChatGPT的历史性突破**
-
-ChatGPT的发布被广泛认为是人工智能历史上的重要里程碑。与之前的GPT-3相比，ChatGPT引入了基于人类反馈的强化学习（RLHF）技术，这一技术革新使得AI能够更好地理解人类意图，生成更加有用、可靠、符合人类期望的回复。
-
-ChatGPT的爆火不仅在于其技术能力，更在于其产品化程度。它以对话界面为载体，将复杂的大语言模型技术包装成用户友好的产品，消除了技术门槛。发布仅5天用户数突破100万，2个月达到1亿用户，这一增长速度刷新了互联网应用的历史记录。
-
-ChatGPT的成功激起了全球对AI的空前关注，也为各国在AI领域的投入注入了强大动力。它不仅是技术的突破，更是商业模式的成功验证，开启了AI商业化的新纪元。
-
 **2023年：中国大模型元年**
 
 2023年被称为中国大模型元年。从3月百度文心一言首次发布开始，中国各大科技公司纷纷在6个月内推出自己的大模型产品，形成了"百模大战"的壮观场面。这种集中爆发的现象反映了中国AI产业的整体实力和快速响应能力。
@@ -485,11 +535,34 @@ ChatGPT的成功激起了全球对AI的空前关注，也为各国在AI领域的
 
 这一阶段的竞争焦点从单纯的技术指标转向应用场景、用户体验、生态建设等综合实力。两国都在寻找自己的差异化优势：美国继续在基础技术和产品生态上发力，中国则在中文本土化和产业化应用上深耕细作。
 
-        ```"#;
+![AI芯片算力对比](/Users/xuenai/Code/rag-rs/docs/imgs/ai_chips_3.jpg)
+
+```python
+print("hello world")
+```
+    "#;
+
+
+    #[test]
+    fn test1() -> Result<()> {
 
         let parser = MarkdownParser::new("doc-001".to_string(), Some("rag.md".to_string()));
-        let tree = parser.parse(md)?;
+        let tree = parser.parse(TEST_MARKDOWN)?;
+        
+        println!("=== 树形结构显示 ===");
         println!("{}", tree);
+        
         Ok(())
     }
+
+    #[test]
+    fn test2() -> Result<()> {
+
+        let parser = MarkdownParser::new("doc-002".to_string(), Some("rag_report.md".to_string()));
+        let tree = parser.parse(TEST_MARKDOWN)?;
+        let json = serde_json::to_string_pretty(&tree)?;
+        println!("{}", json);
+        Ok(())
+    }
+
 }
