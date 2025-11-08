@@ -92,7 +92,7 @@ impl VectorStore for PgVectorStore {
         Ok(())
     }
 
-    async fn upsert_vector(&self, vectors: Vec<VectorRecord>) -> Result<()> {
+    async fn upsert_vectors(&self, vectors: Vec<VectorRecord>) -> Result<()> {
         let mut tx = self.pool.begin().await?;
 
         for vec in vectors {

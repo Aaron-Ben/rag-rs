@@ -1,4 +1,4 @@
-use crate::embedding::{EmbeddingClient, EmbeddingError, EmbeddingResult};
+use crate::client::{EmbeddingClient, EmbeddingError, EmbeddingResult};
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -9,25 +9,6 @@ struct QwenRequest {
     input: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     task: Option<String>,
-}
-
-#[derive(Deserialize, Debug)]
-struct OpenAIEmbeddingResponse {
-    data: Vec<OpenAIEmbeddingItem>,
-    _model: String,
-    _usage: OpenAIUsage,
-}
-
-#[derive(Deserialize, Debug)]
-struct OpenAIEmbeddingItem {
-    embedding: Vec<f32>,
-    index: usize,
-}
-
-#[derive(Deserialize, Debug)]
-struct OpenAIUsage {
-    _prompt_tokens: usize,
-    _total_tokens: usize,
 }
 
 #[derive(Deserialize, Debug)]
@@ -81,7 +62,7 @@ impl EmbeddingClient for QwenEmbeddingClient {
 
         let request = QwenRequest {
             model: self.model.clone(),
-            input: texts,
+            input: texts.clone(),
             task: self.task.clone(),
         };
 
@@ -94,12 +75,20 @@ impl EmbeddingClient for QwenEmbeddingClient {
             .json(&request)
             .send()
             .await
-            .map_err(|e| EmbeddingError::Network(e.to_string()))?;
+            .map_err(|e| {
+                println!("网络请求错误: {}", e);
+                EmbeddingError::Network(e.to_string())
+            })?;
 
         let status = resp.status();
-        let resp_text = resp.text().await.map_err(|e| EmbeddingError::Network(e.to_string()))?;
+        let resp_text = resp.text().await.map_err(|e| {
+            println!("读取响应文本错误: {}", e);
+            EmbeddingError::Network(e.to_string())
+        })?;
+
 
         if !status.is_success() {
+            println!("API 返回错误状态");
             if let Ok(err_resp) = serde_json::from_str::<ErrorResponse>(&resp_text) {
                 let msg = err_resp.error.message.unwrap_or("Unknown error".to_string());
                 let code = err_resp.error.code.unwrap_or_default();
@@ -109,12 +98,54 @@ impl EmbeddingClient for QwenEmbeddingClient {
             }
         }
 
-        let openai_resp: OpenAIEmbeddingResponse = serde_json::from_str(&resp_text)
-            .map_err(|e| EmbeddingError::InvalidResponse(e.to_string()))?;
+        // 使用 Value 来动态解析
+        let value: serde_json::Value = serde_json::from_str(&resp_text)
+            .map_err(|e| {
+                println!("JSON 解析错误: {}", e);
+                EmbeddingError::InvalidResponse(e.to_string())
+            })?;
 
-        let mut embeddings: Vec<_> = openai_resp.data.into_iter().collect();
-        embeddings.sort_by_key(|item| item.index);
-        let vectors: Vec<Vec<f32>> = embeddings.into_iter().map(|item| item.embedding).collect();
+        // println!("解析后的 JSON: {:#}", value);
+
+        // 根据实际响应结构提取 embeddings
+        let vectors:Vec<Vec<f32>> = if let Some(embeddings) = value.get("data").and_then(|d| d.as_array()) {
+            // OpenAI 兼容格式
+            let mut embeds: Vec<(usize, Vec<f32>)> = Vec::new();
+            for item in embeddings {
+                if let (Some(index), Some(embedding_array)) = (
+                    item.get("index").and_then(|i| i.as_u64()),
+                    item.get("embedding").and_then(|e| e.as_array()),
+                ) {
+                    let embedding: Vec<f32> = embedding_array
+                        .iter()
+                        .filter_map(|v| v.as_f64().map(|f| f as f32))
+                        .collect();
+                    embeds.push((index as usize, embedding));
+                }
+            }
+            embeds.sort_by_key(|(index, _)| *index);
+            embeds.into_iter().map(|(_, embedding)| embedding).collect()
+        } else if let Some(embeddings) = value.get("output")
+            .and_then(|o| o.get("embeddings"))
+            .and_then(|e| e.as_array()) 
+        {
+            // 达摩院原生格式
+            let mut embeds: Vec<(usize, Vec<f32>)> = Vec::new();
+            for (i, item) in embeddings.iter().enumerate() {
+                if let Some(embedding_array) = item.get("embedding").and_then(|e| e.as_array()) {
+                    let embedding: Vec<f32> = embedding_array
+                        .iter()
+                        .filter_map(|v| v.as_f64().map(|f| f as f32))
+                        .collect();
+                    embeds.push((i, embedding));
+                }
+            }
+            embeds.into_iter().map(|(_, embedding)| embedding).collect()
+        } else {
+            return Err(EmbeddingError::InvalidResponse(
+                "无法从响应中提取 embedding 数据".to_string()
+            ));
+        };
 
         Ok(vectors)
     }

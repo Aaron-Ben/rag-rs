@@ -23,7 +23,7 @@ pub trait VectorStore {
     
     async fn add_vectors(&self, vectors: Vec<VectorRecord>) -> Result<()>;
 
-    async fn upsert_vector(&self, vector: Vec<VectorRecord>) -> Result<()>;
+    async fn upsert_vectors(&self, vector: Vec<VectorRecord>) -> Result<()>;
 
     async fn delete_vector(&self, ids: Vec<String>) -> Result<()>;
 

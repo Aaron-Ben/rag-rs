@@ -1,6 +1,8 @@
 [workspace]
-members = [ "crates/rag-embeddings", 
+members = [ 
+    "crates/rag-embeddings", 
     "crates/rag-indexing", 
     "crates/rsllm", 
     "rag"
 ]
+resolver = "2"

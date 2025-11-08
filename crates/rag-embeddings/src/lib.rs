@@ -1,2 +1,3 @@
-pub mod embedding;
+pub mod client;
 pub mod database;
+pub mod embedding;

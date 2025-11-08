@@ -166,6 +166,13 @@ impl Node {
         }
     }
 
+    pub fn title(&self) -> Option<&str> {
+        match self {
+            Node::Intermediate(inter) => inter.title.as_deref(),
+            _ => None,
+        }
+    }
+
     pub fn parent_id(&self) -> Option<NodeId> {
         self.relationships()
             .get(&NodeRelationship::Parent)
@@ -304,9 +311,34 @@ impl NodeTree {
         Ok(())
     }
 
-    /// 获取所有叶子节点
     pub fn leaf_nodes(&self) -> impl Iterator<Item = &LeafNode> {
-        self.nodes.values()
-            .filter_map(|n| n.as_leaf())
+        self.nodes.values().filter_map(|node| node.as_leaf())
+    }
+
+    // 获取节点的路径
+    pub fn get_ancestors(&self, mut node_id: NodeId) -> Vec<&Node> {
+        let mut path = Vec::new();
+
+        while let Some(node) = self.nodes.get(&node_id) {
+            path.push(node);
+            if let Some(parent_id) = node.parent_id() {
+                node_id = parent_id;
+            } else {
+                break;
+            }
+        }
+
+        path.reverse();
+        path
+    }
+
+    pub fn set_leaf_embedding(&mut self, leaf_id: NodeId, embedding: Vec<f32>) -> Result<()> {
+        if let Some(Node::Leaf(leaf)) = self.nodes.get_mut(&leaf_id) {
+            leaf.embedding = Some(embedding);
+            Ok(())
+        } else {
+            Err(anyhow!("Leaf node with id {} not found", leaf_id))
+        }
     }
 }
+
