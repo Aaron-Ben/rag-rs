@@ -31,9 +31,8 @@ impl MarkdownParser {
         let mut current_hierarchy = vec!["Root".to_string()];
 
         // 状态标志
-        let mut in_heading = false;
-        let mut in_table = false;
         let mut in_code_block = false;
+        let mut in_table = false;
         let mut in_image = false;
 
         // 缓冲区
@@ -46,6 +45,15 @@ impl MarkdownParser {
         let mut image_alt = String::new();
         let mut image_path = String::new();
 
+        // 待处理的标题
+        struct PendingHeading {
+            level: u32,
+            text: String,
+            _parent_id: NodeId,
+            _parent_hierarchy: Vec<String>,
+        }
+        let mut pending_heading: Option<PendingHeading> = None;
+
         // 全局 chunk 计数
         let mut chunk_index = 0;
 
@@ -55,41 +63,20 @@ impl MarkdownParser {
                 Event::Start(tag) => {
                     match tag {
                         Tag::Heading { level, .. } => {
-                            let target_level = level as usize;
-                            
-                            // 调整栈深度，确保栈顶对应正确的标题级别
-                            while heading_stack.len() > target_level {
+                            // 弹出超出当前级别的栈顶
+                            while heading_stack.len() > level as usize {
                                 heading_stack.pop();
                             }
 
-                            // 获取父节点
                             let (parent_id, parent_hier) = heading_stack.last().cloned()
                                 .unwrap_or((root_id, vec!["Root".to_string()]));
 
-                            // 创建新的层次路径
-                            let mut new_hier = parent_hier.clone();
-                            new_hier.push("".to_string()); // 临时占位
-
-                            // 创建中间节点
-                            let intermediate = Node::new_intermediate(
-                                parent_id,
-                                None, // 标题暂时为空，结束时再填充
-                                new_hier.clone(),
-                                self.document_id.clone(),
-                            );
-                            let new_id = intermediate.id();
-
-                            // 添加到树中
-                            tree.add_node(intermediate)?;
-                            
-                            // 更新栈
-                            heading_stack.push((new_id, new_hier.clone()));
-                            
-                            // 关键：更新当前父节点为新创建的中间节点
-                            current_parent_id = new_id;
-                            current_hierarchy = new_hier;
-
-                            in_heading = true;
+                            pending_heading = Some(PendingHeading {
+                                level: level as u32,
+                                text: String::new(),
+                                _parent_id: parent_id,
+                                _parent_hierarchy: parent_hier,
+                            });
                         }
 
                         Tag::CodeBlock(_) => {
@@ -118,24 +105,43 @@ impl MarkdownParser {
                 Event::End(tag_end) => {
                     match tag_end {
                         pulldown_cmark::TagEnd::Heading(_) => {
-                            in_heading = false;
-
-                            // 填充标题文本
-                            if let Some((node_id, hier)) = heading_stack.last_mut() {
-                                let title = hier.last().unwrap().trim().to_string();
-                                if !title.is_empty() {
-                                    if let Some(node) = tree.nodes.get_mut(node_id) {
-                                        if let Node::Intermediate(inter) = node {
-                                            inter.title = Some(title.clone());
-                                        }
-                                    }
-                                    *hier.last_mut().unwrap() = title;
+                            if let Some(heading) = pending_heading.take() {
+                                let title = heading.text.trim();
+                                if title.is_empty() {
+                                    continue; // 跳过空标题
                                 }
+                                let title_str = title.to_string();
+
+                                // 确保栈深度正确
+                                while heading_stack.len() > heading.level as usize {
+                                    heading_stack.pop();
+                                }
+
+                                let (parent_id, parent_hier) = heading_stack.last().cloned()
+                                    .unwrap_or((root_id, vec!["Root".to_string()]));
+
+                                let mut new_hier = parent_hier.clone();
+                                new_hier.push(title_str.clone());
+
+                                let intermediate = Node::new_intermediate(
+                                    parent_id,
+                                    Some(title_str.clone()),
+                                    new_hier.clone(),
+                                    self.document_id.clone(),
+                                );
+                                let new_id = intermediate.id();
+                                tree.add_node(intermediate)?;
+
+                                // 入栈
+                                heading_stack.push((new_id, new_hier.clone()));
+
+                                // 更新当前上下文
+                                current_parent_id = new_id;
+                                current_hierarchy = new_hier;
                             }
                         }
 
                         pulldown_cmark::TagEnd::Paragraph => {
-                            // 段落结束时处理内容
                             if !paragraph_buffer.trim().is_empty() {
                                 let text = paragraph_buffer.trim().to_string();
                                 let leaf = Node::new_leaf(
@@ -188,18 +194,14 @@ impl MarkdownParser {
                         }
 
                         pulldown_cmark::TagEnd::TableRow => {
-                            if in_table {
-                                // 只在有 header 时才收集正文行
-                                if table_header.is_some() {
-                                    table_buffer.push(current_row.clone());
-                                }
+                            if in_table && table_header.is_some() {
+                                table_buffer.push(current_row.clone());
                                 current_row.clear();
                             }
                         }
 
                         pulldown_cmark::TagEnd::Table => {
                             if in_table {
-                                // 拼装完整的 Markdown 表格
                                 let mut markdown = String::new();
                                 if let Some(header) = &table_header {
                                     markdown.push_str(&format!("| {} |\n", header.join(" | ")));
@@ -209,7 +211,6 @@ impl MarkdownParser {
                                     markdown.push_str(&format!("| {} |\n", row.join(" | ")));
                                 }
 
-                                // 创建一个 Leaf（整表）
                                 if !markdown.trim().is_empty() {
                                     let mut table_hier = current_hierarchy.clone();
                                     table_hier.push(format!("table_{}", chunk_index));
@@ -242,7 +243,7 @@ impl MarkdownParser {
                                 let mut img_hier = current_hierarchy.clone();
                                 img_hier.push(format!("img_{}", chunk_index));
 
-                                let image_id = image_path.split("/").last().unwrap().to_string();
+                                let image_id = image_path.split("/").last().unwrap_or("").to_string();
 
                                 let leaf = Node::new_leaf(
                                     current_parent_id,
@@ -262,7 +263,6 @@ impl MarkdownParser {
                                 in_image = false;
                                 image_alt.clear();
                                 image_path.clear();
-
                                 paragraph_buffer.clear();
                             }
                         }
@@ -275,16 +275,8 @@ impl MarkdownParser {
                 Event::Text(text) => {
                     let s = text.as_ref();
 
-                    if in_heading {
-                        // 优先处理标题文本
-                        if let Some((_, hier)) = heading_stack.last_mut() {
-                            let last = hier.last_mut().unwrap();
-                            if last.is_empty() {
-                                *last = s.to_string();
-                            } else {
-                                last.push_str(s);
-                            }
-                        }
+                    if let Some(heading) = &mut pending_heading {
+                        heading.text.push_str(s);
                     } else if in_code_block {
                         code_buffer.push_str(s);
                         code_buffer.push('\n');
@@ -292,21 +284,20 @@ impl MarkdownParser {
                         current_row.push(s.to_string());
                     } else if in_image {
                         image_alt.push_str(s);
-                    } 
-                    else if !s.trim().is_empty() {
+                    } else if !s.trim().is_empty() {
                         paragraph_buffer.push_str(s);
                         paragraph_buffer.push(' ');
                     }
                 }
 
                 Event::Code(text) => {
-                    if !in_heading {
+                    if pending_heading.is_none() && !in_code_block {
                         paragraph_buffer.push_str(&format!("`{}` ", text));
                     }
                 }
 
                 Event::SoftBreak | Event::HardBreak => {
-                    if !paragraph_buffer.is_empty() && !in_heading && !in_table {
+                    if !paragraph_buffer.is_empty() && pending_heading.is_none() && !in_table {
                         paragraph_buffer.push(' ');
                     }
                 }
@@ -315,7 +306,7 @@ impl MarkdownParser {
             }
         }
 
-        // 最后未结束的段落
+        // 处理最后未结束的段落
         if !paragraph_buffer.trim().is_empty() {
             let text = paragraph_buffer.trim().to_string();
             let leaf = Node::new_leaf(
@@ -430,29 +421,36 @@ impl NodeTree {
                     let is_image = leaf.metadata.image_path.is_some();
                     let icon = if is_image { "🖼️" } else { "📄" };
 
-                    // 截取文本用于显示
-                    let display_text = if leaf.text.chars().count() > 500 {
-                        let truncated: String = leaf.text.chars().take(500).collect();
-                        format!("{}...", truncated)
-                    } else {
-                        leaf.text.clone()
-                    };
-                    let clean_text = display_text.replace('\n', " ").replace('\r', "");
-                    let chunk_info = match leaf.metadata.chunk_size {
-                        Some(size) => format!("[chunk_{}]", size),
-                        None => "[chunk]".to_string(),
-                    };
+                    let chunk_info = leaf.metadata.chunk_size
+                        .map(|size| format!("[chuck_{}]",size))
+                        .unwrap_or("[chunk]".to_string());
 
                     let content = if is_image {
-                        let alt = leaf.metadata.image_alt.as_deref().unwrap_or("");
-                        let path = leaf.metadata.image_path.as_deref().unwrap_or("");
-                        format!("{} [{}] {} ({})", chunk_info, alt, clean_text, path)
+                        let alt = leaf.metadata.image_alt.as_deref().unwrap_or("无描述");
+                        let path = leaf.metadata.image_path.as_deref().unwrap_or("未知路径");
+                        let image_id = leaf.metadata.image_id.as_deref().unwrap_or("");
+
+                        // 只显示语义信息，不显示完整 Markdown
+                        if !image_id.is_empty() {
+                            format!("{} [{}] {} -> {}", chunk_info, alt, image_id, path)
+                        } else {
+                            format!("{} [{}] {}", chunk_info, alt, path)
+                        }
                     } else {
+                        let display_text = if leaf.text.chars().count() > 500 {
+                            let truncated: String = leaf.text.chars().take(500).collect();
+                            format!("{}...", truncated)
+                        } else {
+                            leaf.text.clone()
+                        };
+
+                        let clean_text = display_text.replace('\n', " ").replace('\r', "");
                         format!("{} {}", chunk_info, clean_text)
                     };
 
                     (icon, content)
                 }
+            
             };
             
             writeln!(f, "{}{} {}", indent, icon, content)?;
