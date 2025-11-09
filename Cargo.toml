@@ -1,7 +1,8 @@
 [workspace]
 members = [ 
     "crates/rag-embeddings", 
-    "crates/rag-indexing", 
+    "crates/rag-indexing",
+    "crates/rag-retrieval", 
     "crates/rsllm", 
     "rag"
 ]

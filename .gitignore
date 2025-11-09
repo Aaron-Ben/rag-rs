@@ -5,5 +5,3 @@
 
 .env
 /docs
-
-crates/rag-indexing/lib/pdfium/libpdfium.dylib

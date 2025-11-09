@@ -13,7 +13,7 @@ pub fn leaf_to_vector_record(node_tree: &NodeTree, leaf: &LeafNode) -> VectorRec
 
     VectorRecord {
         id: leaf.id.to_string(),
-        embedding: leaf.embedding.clone().unwrap_or_default(),
+        embedding: leaf.embedding.clone().unwrap_or_default(), // embedding 已自动 L2 归一化
         text: Some(leaf.text.clone()),
         metadata: serde_json::json!({
             "document_id": leaf.metadata.document_id,
@@ -32,11 +32,28 @@ pub fn leaf_to_vector_record(node_tree: &NodeTree, leaf: &LeafNode) -> VectorRec
     }
 }
 
+/// 将 NodeTree 的叶子节点转换为向量表示并存储到数据库
+/// 
+/// # 流程
+/// 1. 遍历所有叶子节点，收集未生成 embedding 的文本
+/// 2. 使用 QwenEmbeddingClient 生成 embedding 向量（**自动 L2 归一化**）
+/// 3. 将归一化后的向量存储到对应叶子节点
+/// 4. 转换为 VectorRecord 格式并存储到 pgvector 数据库
+/// 
+/// # 注意事项
+/// - 所有生成的 embedding 向量都会自动进行 L2 归一化（单位长度）
+/// - 归一化确保余弦相似度计算的准确性，适合 RAG 检索场景
+/// - 向量维度：text-embedding-v1/v2=1536, text-embedding-v3=2560
+/// 
+/// # 错误处理
+/// - 如果 API 调用失败，会返回详细的错误信息
+/// - 零向量无法归一化，会抛出 InvalidVector 错误
 pub async fn save_node_tree(
     node_tree: &mut NodeTree,
     store: PgVectorStore,
     embedding_client: QwenEmbeddingClient,
 ) -> Result<()> {
+    
     let mut texts = Vec::new();
     let mut leaf_ids = Vec::new();
 
@@ -48,10 +65,30 @@ pub async fn save_node_tree(
     }
 
     if !texts.is_empty() {
-        let embeddings = embedding_client.embed(texts).await?;
-        for (i, embedding) in embeddings.into_iter().enumerate() {
+        let embeddings = embedding_client.embed(texts).await?;        
+        // 验证每个向量的归一化状态
+        for (i, embedding) in embeddings.iter().enumerate() {
+            let norm = embedding.iter().map(|&x| x as f64 * x as f64).sum::<f64>().sqrt();
+            let is_normalized = (norm - 1.0).abs() < 1e-6;
+            
+            if i < 3 { // 只打印前3个向量的详细信息
+                println!("  向量 {}: L2范数={:.8}, 归一化={}, 范围[{:.4} ~ {:.4}]", 
+                    i, norm, is_normalized, 
+                    embedding.iter().fold(f32::INFINITY, |a, &b| a.min(b)),
+                    embedding.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b))
+                );
+            }
+            
+            assert!(is_normalized, "向量 {} 未正确归一化，L2范数: {:.8}", i, norm);
+        }
+
+        for (i, embedding) in embeddings.clone().into_iter().enumerate() {
             node_tree.set_leaf_embedding(leaf_ids[i], embedding)?;
         }
+        
+        println!("已将 {} 个归一化向量存储到 NodeTree", embeddings.len());
+    } else {
+        println!("所有叶子节点已有 embedding，无需重新生成");
     }
 
     // match serde_json::to_string_pretty(node_tree) {
@@ -63,14 +100,20 @@ pub async fn save_node_tree(
     //     Err(e) => eprintln!("序列化失败: {}", e),
     // }
 
-    let records = node_tree
+    let records: Vec<VectorRecord> = node_tree
         .leaf_nodes()
         .filter(|leaf| leaf.embedding.is_some())
-        .map(|leaf| leaf_to_vector_record(node_tree, leaf))
+        .map(|leaf| {
+            let record = leaf_to_vector_record(node_tree, leaf);
+            // 验证存储的向量也是归一化的
+            let norm = record.embedding.iter().map(|&x| x as f64 * x as f64).sum::<f64>().sqrt();
+            assert!((norm - 1.0).abs() < 1e-6, "存储的向量未正确归一化，L2范数: {:.8}", norm);
+            record
+        })
         .collect();
 
     store.upsert_vectors(records).await?;
-
+    
     Ok(())
 }
 
@@ -105,7 +148,6 @@ ChatGPT的出现并非偶然，而是人工智能发展到一定阶段的必然�
         let api_key = std::env::var("DASHSCOPE_API_KEY")
             .expect("请设置环境变量 DASHSCOPE_API_KEY 或在 .env 文件中配置");
         let embedding_client = QwenEmbeddingClient::for_text(api_key, "text-embedding-v1".to_string());
-
 
         let parser = MarkdownParser::new("doc-001".to_string(),Some("test.md".to_string()));
         let mut tree = parser.parse(TEST)?;

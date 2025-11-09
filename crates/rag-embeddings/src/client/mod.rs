@@ -9,6 +9,8 @@ pub enum EmbeddingError {
     Api(String),
     #[error("Invalid response: {0}")]
     InvalidResponse(String),
+    #[error("Invalid vector: {0}")]
+    InvalidVector(String),
 }
 
 pub type EmbeddingResult<T> = Result<T, EmbeddingError>;
